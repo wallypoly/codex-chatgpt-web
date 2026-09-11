@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   DEFAULT_EXECUTION_POLICY,
   NativeEgressBlockedError,
@@ -7,6 +7,17 @@ import {
   parseExecutionPolicy,
 } from "../src/execution-policy";
 import { forwardNativeCodexRequest, type NativeCodexEndpoint } from "../src/native-passthrough";
+
+function nativeResponseRequest(): Request {
+  return new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer test-codex-session",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
+  });
+}
 
 test("execution policy defaults to web-only and requires an explicit mixed opt-in", () => {
   expect(DEFAULT_EXECUTION_POLICY).toBe("web-only");
@@ -25,6 +36,19 @@ test("web-only allows native model metadata but blocks native work endpoints", (
     "images/edits",
   ] as const) {
     expect(nativeEgressAllowed("web-only", endpoint)).toBeFalse();
+  }
+});
+
+test("production default blocks native inference before global fetch", async () => {
+  const upstream = spyOn(globalThis, "fetch").mockImplementation(async () => {
+    throw new Error("global fetch must not be reached");
+  });
+  try {
+    await expect(forwardNativeCodexRequest(nativeResponseRequest(), "responses"))
+      .rejects.toBeInstanceOf(NativeEgressBlockedError);
+    expect(upstream).toHaveBeenCalledTimes(0);
+  } finally {
+    upstream.mockRestore();
   }
 });
 
@@ -87,14 +111,7 @@ test("web-only still permits native model metadata lookup", async () => {
 test("mixed policy preserves explicit native passthrough", async () => {
   let upstreamCalls = 0;
   const response = await forwardNativeCodexRequest(
-    new Request("http://127.0.0.1:17841/v1/responses", {
-      method: "POST",
-      headers: {
-        authorization: "Bearer test-codex-session",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
-    }),
+    nativeResponseRequest(),
     "responses",
     async () => {
       upstreamCalls += 1;
