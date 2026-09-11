@@ -10,7 +10,7 @@ import { forwardNativeCodexRequest, type NativeCodexEndpoint } from "../src/nati
 
 test("execution policy defaults to web-only and requires an explicit mixed opt-in", () => {
   expect(DEFAULT_EXECUTION_POLICY).toBe("web-only");
-  expect(executionPolicyFromEnvironment({})).toBe("web-only");
+  expect(executionPolicyFromEnvironment({ CODEX_CHATGPT_WEB_EXECUTION_POLICY: undefined })).toBe("web-only");
   expect(parseExecutionPolicy("mixed")).toBe("mixed");
   expect(() => parseExecutionPolicy("native")).toThrow("expected \"web-only\" or \"mixed\"");
 });
@@ -63,6 +63,25 @@ test("final native fetch boundary makes zero upstream calls for every blocked en
   }
 
   expect(upstreamCalls).toBe(0);
+});
+
+test("web-only still permits native model metadata lookup", async () => {
+  let upstreamCalls = 0;
+  const response = await forwardNativeCodexRequest(
+    new Request("http://127.0.0.1:17841/v1/models", {
+      headers: { authorization: "Bearer test-codex-session" },
+    }),
+    "models",
+    async () => {
+      upstreamCalls += 1;
+      return Response.json({ models: [] });
+    },
+    undefined,
+    { executionPolicy: "web-only" },
+  );
+
+  expect(upstreamCalls).toBe(1);
+  expect(response.status).toBe(200);
 });
 
 test("mixed policy preserves explicit native passthrough", async () => {
