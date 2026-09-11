@@ -35,6 +35,11 @@ import {
   requireChatGptWebModelRoute,
   type ChatGptWebModelRoute,
 } from "./chatgpt-web-models";
+import {
+  NATIVE_BACKEND_FORBIDDEN_CODE,
+  WEB_ROUTE_REQUIRED_CODE,
+  nativeEgressAllowed,
+} from "./execution-policy";
 import { forwardNativeCodexRequest, type NativeFetch, type NativeImageEndpoint } from "./native-passthrough";
 import {
   buildCompactV1Output,
@@ -352,6 +357,17 @@ export class HttpTurnCounter {
 
 type ChatGptWebAdapterFactory = (provider: CodexProviderConfig) => ProviderAdapter;
 
+
+function policyErrorResponse(status: number, code: string, message: string): Response {
+  return Response.json({
+    error: {
+      message,
+      type: status === 403 ? "permission_error" : "invalid_request_error",
+      code,
+    },
+  }, { status });
+}
+
 export interface ResponseRequestOptions {
   /** DEV and other in-process harnesses can keep continuation state in their own canonical store. */
   rememberState?: boolean;
@@ -359,6 +375,8 @@ export interface ResponseRequestOptions {
   onAdapterEvent?: (event: AdapterEvent) => void;
   /** Bind the physical HTTP stream to the exact native Codex turn that owns it. */
   onTurnIdentity?: (identity: NativeCodexTurnIdentity) => void;
+  /** Test/embedding seam for native metadata or explicitly mixed-mode passthrough. */
+  fetchUpstream?: NativeFetch;
 }
 
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
@@ -380,7 +398,7 @@ export async function modelsRequest(
 ): Promise<Response> {
   let upstream: Response;
   try {
-    upstream = await forwardNativeCodexRequest(req, "models", fetchUpstream);
+    upstream = await forwardNativeCodexRequest(req, "models", config.executionPolicy, fetchUpstream);
   } catch (error) {
     return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
   }
@@ -402,10 +420,18 @@ export async function modelsRequest(
 
 export async function nativeSearchRequest(
   req: Request,
+  executionPolicy: AppConfig["executionPolicy"],
   fetchUpstream?: NativeFetch,
 ): Promise<Response> {
+  if (!nativeEgressAllowed(executionPolicy, "alpha/search")) {
+    return policyErrorResponse(
+      403,
+      NATIVE_BACKEND_FORBIDDEN_CODE,
+      "Web-only execution policy blocks native Codex Search egress",
+    );
+  }
   try {
-    return await forwardNativeCodexRequest(req, "alpha/search", fetchUpstream);
+    return await forwardNativeCodexRequest(req, "alpha/search", executionPolicy, fetchUpstream);
   } catch (error) {
     return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
   }
@@ -414,14 +440,22 @@ export async function nativeSearchRequest(
 async function nativeImagesRequest(
   req: Request,
   endpoint: NativeImageEndpoint,
+  executionPolicy: AppConfig["executionPolicy"],
   fetchUpstream?: NativeFetch,
 ): Promise<Response> {
+  if (!nativeEgressAllowed(executionPolicy, endpoint)) {
+    return policyErrorResponse(
+      403,
+      NATIVE_BACKEND_FORBIDDEN_CODE,
+      "Web-only execution policy blocks native Codex Image egress",
+    );
+  }
   const authorization = req.headers.get("authorization") ?? "";
   if (!authorization.startsWith("Bearer ") || authorization.length <= "Bearer ".length) {
     return formatErrorResponse(401, "authentication_error", "Native image requests require incoming Codex Bearer authorization");
   }
   try {
-    return await forwardNativeCodexRequest(req, endpoint, fetchUpstream);
+    return await forwardNativeCodexRequest(req, endpoint, executionPolicy, fetchUpstream);
   } catch (error) {
     return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
   }
@@ -449,7 +483,7 @@ export async function responseRequest(
   adapterFactory: ChatGptWebAdapterFactory = createChatGptWebAdapter,
   options: ResponseRequestOptions = {},
 ): Promise<Response> {
-  const nativeRequest = req.clone();
+  const nativeRequest = config.executionPolicy === "mixed" ? req.clone() : undefined;
   let raw: unknown;
   try {
     raw = await readJsonRequestBody(req);
@@ -463,6 +497,14 @@ export async function responseRequest(
   const requestedModel = raw && typeof raw === "object" && !Array.isArray(raw)
     ? (raw as { model?: unknown }).model
     : undefined;
+  if (config.executionPolicy === "web-only"
+    && (typeof requestedModel !== "string" || !isChatGptWebModelSlug(requestedModel))) {
+    return policyErrorResponse(
+      400,
+      WEB_ROUTE_REQUIRED_CODE,
+      "Web-only execution requires an enabled chatgpt-web/* model route",
+    );
+  }
   try {
     const identity = extractCodexTurnIdentityFromBody(raw);
     if (identity.threadId && identity.turnId) {
@@ -473,7 +515,13 @@ export async function responseRequest(
   }
   if (typeof requestedModel === "string" && !isChatGptWebModelSlug(requestedModel)) {
     try {
-      return await forwardNativeCodexRequest(nativeRequest, "responses", undefined, raw);
+      return await forwardNativeCodexRequest(
+        nativeRequest!,
+        "responses",
+        config.executionPolicy,
+        options.fetchUpstream,
+        raw,
+      );
     } catch (error) {
       return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
     }
@@ -654,9 +702,9 @@ export async function compactRequest(
   req: Request,
   config: AppConfig,
   adapterFactory: ChatGptWebAdapterFactory = createChatGptWebAdapter,
-  options: Pick<ResponseRequestOptions, "onTurnIdentity"> = {},
+  options: Pick<ResponseRequestOptions, "onTurnIdentity" | "fetchUpstream"> = {},
 ): Promise<Response> {
-  const nativeRequest = req.clone();
+  const nativeRequest = config.executionPolicy === "mixed" ? req.clone() : undefined;
   let raw: Record<string, unknown>;
   try {
     const parsed = await readJsonRequestBody(req);
@@ -667,6 +715,22 @@ export async function compactRequest(
       400,
       "invalid_request_error",
       error instanceof Error ? error.message : "Compaction request body must be a JSON object",
+    );
+  }
+  if (typeof raw.model !== "string" || !raw.model) {
+    return config.executionPolicy === "web-only"
+      ? policyErrorResponse(
+        400,
+        WEB_ROUTE_REQUIRED_CODE,
+        "Web-only execution requires an enabled chatgpt-web/* model route for compaction",
+      )
+      : formatErrorResponse(400, "invalid_request_error", "Compaction request requires a model");
+  }
+  if (config.executionPolicy === "web-only" && !isChatGptWebModelSlug(raw.model)) {
+    return policyErrorResponse(
+      400,
+      WEB_ROUTE_REQUIRED_CODE,
+      "Web-only execution requires an enabled chatgpt-web/* model route for compaction",
     );
   }
   const headerTurnMetadata = req.headers.get("x-codex-turn-metadata");
@@ -693,12 +757,15 @@ export async function compactRequest(
   } catch (error) {
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
   }
-  if (typeof raw.model !== "string" || !raw.model) {
-    return formatErrorResponse(400, "invalid_request_error", "Compaction request requires a model");
-  }
   if (!isChatGptWebModelSlug(raw.model)) {
     try {
-      return await forwardNativeCodexRequest(nativeRequest, "responses/compact", undefined, raw);
+      return await forwardNativeCodexRequest(
+        nativeRequest!,
+        "responses/compact",
+        config.executionPolicy,
+        options.fetchUpstream,
+        raw,
+      );
     } catch (error) {
       return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
     }
@@ -810,6 +877,7 @@ export function startServer(
           service: "codex-chatgpt-web",
           version: VERSION,
           mode: config.mode,
+          execution_policy: config.executionPolicy,
           pid: process.pid,
           port: config.port,
           uptime: (Date.now() - startedAt) / 1_000,
@@ -991,7 +1059,7 @@ export function startServer(
             new Request(req, { signal }),
             config,
             dependencies.adapterFactory,
-            { onTurnIdentity: bindIdentity },
+            { onTurnIdentity: bindIdentity, fetchUpstream: dependencies.fetchUpstream },
           ),
           req.signal,
           process.platform,
@@ -1005,7 +1073,7 @@ export function startServer(
             new Request(req, { signal }),
             config,
             dependencies.adapterFactory,
-            { onTurnIdentity: bindIdentity },
+            { onTurnIdentity: bindIdentity, fetchUpstream: dependencies.fetchUpstream },
           ),
           req.signal,
           process.platform,
@@ -1015,7 +1083,11 @@ export function startServer(
       if (req.method === "POST" && url.pathname === "/v1/alpha/search") {
         if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
         return httpTurns.track(
-          signal => nativeSearchRequest(new Request(req, { signal }), dependencies.fetchUpstream),
+          signal => nativeSearchRequest(
+            new Request(req, { signal }),
+            config.executionPolicy,
+            dependencies.fetchUpstream,
+          ),
           req.signal,
           process.platform,
           "search",
@@ -1028,7 +1100,12 @@ export function startServer(
           ? "images/generations"
           : "images/edits";
         return httpTurns.track(
-          signal => nativeImagesRequest(new Request(req, { signal }), endpoint, dependencies.fetchUpstream),
+          signal => nativeImagesRequest(
+            new Request(req, { signal }),
+            endpoint,
+            config.executionPolicy,
+            dependencies.fetchUpstream,
+          ),
           req.signal,
           process.platform,
           endpoint,

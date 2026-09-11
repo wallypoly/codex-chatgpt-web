@@ -13,6 +13,7 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
   });
   let upstream: Request | undefined;
   const config = defaultConfig("full");
+  config.executionPolicy = "mixed";
   config.subagentProtocol = "native";
   config.proAvailable = true;
   const response = await modelsRequest(request, config, async input => {
@@ -74,6 +75,33 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
     expect(model.priority).toBe(1);
     expect(model.multi_agent_version).toBe("v2");
   }
+});
+
+test("web-only /models returns only routed Web rows while still using official metadata", async () => {
+  const config = defaultConfig("browser-only");
+  let upstreamCalls = 0;
+  const response = await modelsRequest(
+    new Request("http://127.0.0.1:17841/v1/models", {
+      headers: { authorization: "Bearer codex-oauth-token" },
+    }),
+    config,
+    async () => {
+      upstreamCalls += 1;
+      return Response.json({ models: [{
+        slug: "gpt-5.6-sol",
+        display_name: "5.6 Sol",
+        visibility: "list",
+        supported_in_api: true,
+        supported_reasoning_levels: [{ effort: "high", description: "High" }],
+        tool_mode: "code_mode_only",
+      }] });
+    },
+  );
+  expect(response.status).toBe(200);
+  expect(upstreamCalls).toBe(1);
+  const body = await response.json() as { models: Array<{ slug: string }> };
+  expect(body.models.length).toBeGreaterThan(0);
+  expect(body.models.every(model => model.slug.startsWith("chatgpt-web/"))).toBe(true);
 });
 
 test("Luna-only account exposes no paid ChatGPT Web routes", async () => {
@@ -148,6 +176,7 @@ test("Zero Risk returns one generic Web row without using scanned capabilities",
 
 test("ChatGPT-only native catalog rows do not turn model discovery into a 502", async () => {
   const config = defaultConfig("browser-only");
+  config.executionPolicy = "mixed";
   const response = await modelsRequest(
     new Request("http://127.0.0.1:17841/v1/models?client_version=0.147.0", {
       headers: { authorization: "Bearer chatgpt-session-token" },

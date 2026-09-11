@@ -18,7 +18,7 @@ test("forwards native Codex requests verbatim to the official backend", async ()
   });
   let upstreamUrl = "";
   let upstreamRequest: Request | undefined;
-  const response = await forwardNativeCodexRequest(request, "responses", async input => {
+  const response = await forwardNativeCodexRequest(request, "responses", "mixed", async input => {
     upstreamUrl = input.url;
     upstreamRequest = input;
     return new Response("data: native\n\n", {
@@ -53,7 +53,7 @@ test("forwards native Codex compaction requests to the official compact endpoint
   });
   let upstreamUrl = "";
   let upstreamRequest: Request | undefined;
-  const response = await forwardNativeCodexRequest(request, "responses/compact", async input => {
+  const response = await forwardNativeCodexRequest(request, "responses/compact", "mixed", async input => {
     upstreamUrl = input.url;
     upstreamRequest = input;
     return Response.json({ output: [] }, { status: 200 });
@@ -78,7 +78,7 @@ test("native compaction failures record routing evidence without exposing reques
         method: "POST", body,
         headers: { authorization: "Bearer PRIVATE_TOKEN", "chatgpt-account-id": "PRIVATE_ACCOUNT" },
       });
-      const response = await forwardNativeCodexRequest(request, endpoint, async forwarded => {
+      const response = await forwardNativeCodexRequest(request, endpoint, "mixed", async forwarded => {
         expect(await forwarded.text()).toBe(body);
         return Response.json({ detail: "Not Found" }, {
           status: 404, headers: { "x-request-id": "request-123", "cf-ray": "ray-123-KBP" },
@@ -115,7 +115,7 @@ test("forwards standalone Web Search through the authenticated native Codex rout
     body,
   });
   let upstreamRequest: Request | undefined;
-  const response = await forwardNativeCodexRequest(request, "alpha/search", async input => {
+  const response = await forwardNativeCodexRequest(request, "alpha/search", "mixed", async input => {
     upstreamRequest = input;
     return Response.json({ results: [{ title: "result" }] });
   });
@@ -176,7 +176,7 @@ test("removes ChatGPT Web item identities before native Codex compaction", async
     body: encoded,
   });
   let upstreamRequest: Request | undefined;
-  await forwardNativeCodexRequest(request, "responses", async input => {
+  await forwardNativeCodexRequest(request, "responses", "mixed", async input => {
     upstreamRequest = input;
     return new Response("data: native\n\n", { headers: { "content-type": "text/event-stream" } });
   }, body);
@@ -239,7 +239,7 @@ test("converts ChatGPT Web compaction checkpoints before switching back to nativ
     body: JSON.stringify(body),
   });
   let upstreamRequest: Request | undefined;
-  await forwardNativeCodexRequest(request, "responses", async input => {
+  await forwardNativeCodexRequest(request, "responses", "mixed", async input => {
     upstreamRequest = input;
     return new Response("data: native\n\n", { headers: { "content-type": "text/event-stream" } });
   }, body);
@@ -288,7 +288,7 @@ test("keeps native encrypted reasoning requests byte-for-byte intact", async () 
     body: encoded,
   });
   let upstreamRequest: Request | undefined;
-  await forwardNativeCodexRequest(request, "responses", async input => {
+  await forwardNativeCodexRequest(request, "responses", "mixed", async input => {
     upstreamRequest = input;
     return new Response("data: native\n\n", { headers: { "content-type": "text/event-stream" } });
   });
@@ -304,7 +304,7 @@ test("native passthrough fails closed without Codex bearer authentication", asyn
     body: "{}",
   });
 
-  await expect(forwardNativeCodexRequest(request, "responses")).rejects.toThrow(
+  await expect(forwardNativeCodexRequest(request, "responses", "mixed")).rejects.toThrow(
     "Native Codex passthrough requires the incoming Bearer authorization",
   );
 });
@@ -314,7 +314,7 @@ test("forwards native model discovery as GET and preserves the client version qu
     headers: { authorization: "Bearer codex-oauth-token", "if-none-match": "old-etag" },
   });
   let upstreamRequest: Request | undefined;
-  await forwardNativeCodexRequest(request, "models", async input => {
+  await forwardNativeCodexRequest(request, "models", "mixed", async input => {
     upstreamRequest = input;
     return Response.json({ models: [] });
   });
@@ -331,7 +331,7 @@ test("repairs a missing models client_version from an exact first-party Codex us
     },
   });
   let upstreamRequest: Request | undefined;
-  await forwardNativeCodexRequest(request, "models", async input => {
+  await forwardNativeCodexRequest(request, "models", "mixed", async input => {
     upstreamRequest = input;
     return Response.json({ models: [] });
   });
@@ -346,7 +346,7 @@ test("does not invent a models client version from an unrelated user agent", asy
     },
   });
   let upstreamRequest: Request | undefined;
-  await forwardNativeCodexRequest(request, "models", async input => {
+  await forwardNativeCodexRequest(request, "models", "mixed", async input => {
     upstreamRequest = input;
     return Response.json({ models: [] });
   });
@@ -386,7 +386,7 @@ function resettingEventStream(
 test("an upstream reset after the turn completed closes the client stream normally", async () => {
   const response = await forwardNativeCodexRequest(
     nativeRequest(),
-    "responses",
+    "responses", "mixed",
     async () => resettingEventStream([
       'event: response.completed\ndata: {"type":"response.completed"}\n\n',
       "data: [DONE]\n\n",
@@ -401,7 +401,7 @@ test("an upstream reset after the turn completed closes the client stream normal
 test("event-stream media type matching is case-insensitive", async () => {
   const response = await forwardNativeCodexRequest(
     nativeRequest(),
-    "responses",
+    "responses", "mixed",
     async () => resettingEventStream(
       ["data: [DONE]\n\n"],
       "Text/Event-Stream; Charset=UTF-8",
@@ -414,7 +414,7 @@ test("event-stream media type matching is case-insensitive", async () => {
 test("an upstream reset is not hidden by a [DONE] string inside JSON content", async () => {
   const response = await forwardNativeCodexRequest(
     nativeRequest(),
-    "responses",
+    "responses", "mixed",
     async () => resettingEventStream([
       'event: response.output_text.delta\ndata: {"delta":"literal data: [DONE] text"}\n\n',
     ]),
@@ -428,7 +428,7 @@ test("an upstream reset is not hidden by a [DONE] string inside JSON content", a
 test("an upstream reset that truncated the turn is still surfaced as a failure", async () => {
   const response = await forwardNativeCodexRequest(
     nativeRequest(),
-    "responses",
+    "responses", "mixed",
     async () => resettingEventStream(['event: response.output_text.delta\ndata: {"delta":"half"}\n\n']),
   );
 
@@ -438,7 +438,7 @@ test("an upstream reset that truncated the turn is still surfaced as a failure",
 test("a non-event-stream body is passed through untouched", async () => {
   const response = await forwardNativeCodexRequest(
     nativeRequest(),
-    "responses",
+    "responses", "mixed",
     async () => new Response('{"ok":true}', { status: 200, headers: { "content-type": "application/json" } }),
   );
 

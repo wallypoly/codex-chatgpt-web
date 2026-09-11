@@ -9,11 +9,13 @@ export type NativeEgressEndpoint =
   | "images/edits";
 
 export const DEFAULT_EXECUTION_POLICY: ExecutionPolicy = "web-only";
+export const NATIVE_BACKEND_FORBIDDEN_CODE = "native_backend_forbidden";
+export const WEB_ROUTE_REQUIRED_CODE = "web_route_required";
 
 const WEB_ONLY_ALLOWED_NATIVE_ENDPOINTS = new Set<NativeEgressEndpoint>(["models"]);
 
 export class NativeEgressBlockedError extends Error {
-  readonly code = "native_egress_blocked";
+  readonly code = NATIVE_BACKEND_FORBIDDEN_CODE;
 
   constructor(
     readonly endpoint: NativeEgressEndpoint,
@@ -31,16 +33,6 @@ export function parseExecutionPolicy(
   if (value === undefined || value === null || value === "") return fallback;
   if (value === "web-only" || value === "mixed") return value;
   throw new Error(`Invalid execution policy ${JSON.stringify(value)}; expected "web-only" or "mixed"`);
-}
-
-/**
- * Production is fail-closed. Operators must explicitly select mixed mode to restore the historical
- * gateway that can forward native Codex inference requests.
- */
-export function executionPolicyFromEnvironment(
-  env: Pick<NodeJS.ProcessEnv, "CODEX_CHATGPT_WEB_EXECUTION_POLICY"> = process.env,
-): ExecutionPolicy {
-  return parseExecutionPolicy(env.CODEX_CHATGPT_WEB_EXECUTION_POLICY);
 }
 
 export function nativeEgressAllowed(

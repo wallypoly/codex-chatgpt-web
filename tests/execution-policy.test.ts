@@ -1,8 +1,10 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
+import { defaultConfig } from "../src/config";
 import {
   DEFAULT_EXECUTION_POLICY,
+  NATIVE_BACKEND_FORBIDDEN_CODE,
   NativeEgressBlockedError,
-  executionPolicyFromEnvironment,
+  WEB_ROUTE_REQUIRED_CODE,
   nativeEgressAllowed,
   parseExecutionPolicy,
 } from "../src/execution-policy";
@@ -19,11 +21,14 @@ function nativeResponseRequest(): Request {
   });
 }
 
-test("execution policy defaults to web-only and requires an explicit mixed opt-in", () => {
+test("execution policy defaults fail closed and mixed requires explicit selection", () => {
   expect(DEFAULT_EXECUTION_POLICY).toBe("web-only");
-  expect(executionPolicyFromEnvironment({ CODEX_CHATGPT_WEB_EXECUTION_POLICY: undefined })).toBe("web-only");
+  expect(parseExecutionPolicy(undefined)).toBe("web-only");
+  expect(defaultConfig("browser-only").executionPolicy).toBe("web-only");
   expect(parseExecutionPolicy("mixed")).toBe("mixed");
-  expect(() => parseExecutionPolicy("native")).toThrow("expected \"web-only\" or \"mixed\"");
+  expect(() => parseExecutionPolicy("native")).toThrow('expected "web-only" or "mixed"');
+  expect(NATIVE_BACKEND_FORBIDDEN_CODE).toBe("native_backend_forbidden");
+  expect(WEB_ROUTE_REQUIRED_CODE).toBe("web_route_required");
 });
 
 test("web-only allows native model metadata but blocks native work endpoints", () => {
@@ -36,19 +41,6 @@ test("web-only allows native model metadata but blocks native work endpoints", (
     "images/edits",
   ] as const) {
     expect(nativeEgressAllowed("web-only", endpoint)).toBeFalse();
-  }
-});
-
-test("production default blocks native inference before global fetch", async () => {
-  const upstream = spyOn(globalThis, "fetch").mockImplementation(async () => {
-    throw new Error("global fetch must not be reached");
-  });
-  try {
-    await expect(forwardNativeCodexRequest(nativeResponseRequest(), "responses"))
-      .rejects.toBeInstanceOf(NativeEgressBlockedError);
-    expect(upstream).toHaveBeenCalledTimes(0);
-  } finally {
-    upstream.mockRestore();
   }
 });
 
@@ -77,15 +69,25 @@ test("final native fetch boundary makes zero upstream calls for every blocked en
         ? JSON.stringify({ prompt: "test" })
         : JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
     });
-    await expect(forwardNativeCodexRequest(
-      request,
-      endpoint,
-      fakeUpstream,
-      undefined,
-      { executionPolicy: "web-only" },
-    )).rejects.toBeInstanceOf(NativeEgressBlockedError);
+    await expect(forwardNativeCodexRequest(request, endpoint, "web-only", fakeUpstream))
+      .rejects.toBeInstanceOf(NativeEgressBlockedError);
   }
 
+  expect(upstreamCalls).toBe(0);
+});
+
+
+test("web-only final guard runs before native credential inspection", async () => {
+  let upstreamCalls = 0;
+  const request = new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
+  });
+  await expect(forwardNativeCodexRequest(request, "responses", "web-only", async () => {
+    upstreamCalls += 1;
+    return new Response("unexpected");
+  })).rejects.toMatchObject({ code: "native_backend_forbidden" });
   expect(upstreamCalls).toBe(0);
 });
 
@@ -96,14 +98,12 @@ test("web-only still permits native model metadata lookup", async () => {
       headers: { authorization: "Bearer test-codex-session" },
     }),
     "models",
+    "web-only",
     async () => {
       upstreamCalls += 1;
       return Response.json({ models: [] });
     },
-    undefined,
-    { executionPolicy: "web-only" },
   );
-
   expect(upstreamCalls).toBe(1);
   expect(response.status).toBe(200);
 });
@@ -113,14 +113,12 @@ test("mixed policy preserves explicit native passthrough", async () => {
   const response = await forwardNativeCodexRequest(
     nativeResponseRequest(),
     "responses",
+    "mixed",
     async () => {
       upstreamCalls += 1;
       return new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
     },
-    undefined,
-    { executionPolicy: "mixed" },
   );
-
   expect(upstreamCalls).toBe(1);
   expect(response.status).toBe(200);
 });

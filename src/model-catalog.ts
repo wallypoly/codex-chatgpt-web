@@ -192,6 +192,6 @@ export function augmentNativeModelCatalog(
     .map(route => buildChatGptWebModel(template, route, config));
   return {
     ...structuredClone(catalog),
-    models: [...nativeModels, ...webModels],
+    models: config.executionPolicy === "web-only" ? webModels : [...nativeModels, ...webModels],
   };
 }
