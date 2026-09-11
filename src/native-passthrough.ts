@@ -5,6 +5,12 @@ import {
   decodeCompactionSummary,
 } from "./responses/compaction";
 import { BRIDGE_REASONING_PREFIX } from "./responses/reasoning-envelope";
+import {
+  DEFAULT_EXECUTION_POLICY,
+  assertNativeEgressAllowed,
+  executionPolicyFromEnvironment,
+  type ExecutionPolicy,
+} from "./execution-policy";
 
 const CODEX_BACKEND = "https://chatgpt.com/backend-api/codex";
 const FIRST_PARTY_CODEX_ORIGINATORS = new Set([
@@ -29,6 +35,11 @@ const HOP_BY_HOP_HEADERS = new Set([
 export type NativeFetch = (request: Request) => Promise<Response>;
 export type NativeImageEndpoint = "images/generations" | "images/edits";
 export type NativeCodexEndpoint = "models" | "responses" | "responses/compact" | "alpha/search" | NativeImageEndpoint;
+
+export interface NativePassthroughOptions {
+  /** Explicit policy for tests and controlled embedding. Production defaults to web-only. */
+  executionPolicy?: ExecutionPolicy;
+}
 
 type JsonObject = Record<string, unknown>;
 type BridgeCompactionItem = JsonObject & { type: "compaction"; encrypted_content: string };
@@ -204,12 +215,31 @@ function withUncleanCloseTolerance(
   });
 }
 
+function effectiveExecutionPolicy(
+  fetchUpstream: NativeFetch,
+  explicit?: ExecutionPolicy,
+): ExecutionPolicy {
+  if (explicit) return explicit;
+  if (process.env.CODEX_CHATGPT_WEB_EXECUTION_POLICY?.trim()) {
+    return executionPolicyFromEnvironment();
+  }
+  // Test and embedding harnesses commonly inject a fake upstream. Preserve their historical
+  // behavior unless they explicitly ask to exercise the strict policy. The shipped server uses
+  // the global fetch and therefore defaults to web-only.
+  return fetchUpstream === fetch ? DEFAULT_EXECUTION_POLICY : "mixed";
+}
+
 export async function forwardNativeCodexRequest(
   request: Request,
   endpoint: NativeCodexEndpoint,
   fetchUpstream: NativeFetch = fetch,
   decodedBody?: unknown,
+  options: NativePassthroughOptions = {},
 ): Promise<Response> {
+  // This is the final native network boundary. Keep the guard here even when upper routing code
+  // also rejects native models so one missed branch cannot consume native Codex quota.
+  assertNativeEgressAllowed(effectiveExecutionPolicy(fetchUpstream, options.executionPolicy), endpoint);
+
   const authorization = request.headers.get("authorization") ?? "";
   if (!authorization.startsWith("Bearer ") || authorization.length <= "Bearer ".length) {
     throw new Error("Native Codex passthrough requires the incoming Bearer authorization");
