@@ -51,6 +51,28 @@ test("production and DEV setup reject the removed connector-name option before c
   }
 });
 
+
+test("setup execution policy flags are explicit and mutually exclusive", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-policy-flags-"));
+  try {
+    const env = {
+      ...process.env,
+      CODEX_HOME: join(root, "codex"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "app"),
+    };
+    const conflict = await runCli([
+      "setup", "--browser-only", "--web-only", "--mixed", "--acknowledge-unofficial",
+    ], env);
+    expect(conflict.exitCode).toBe(1);
+    expect(conflict.stderr).toContain("Choose at most one execution policy");
+    const help = await runCli(["--help"], env);
+    expect(help.stdout).toContain("--web-only");
+    expect(help.stdout).toContain("--mixed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("setup validates the port before performing runtime work", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-"));
   try {
@@ -318,6 +340,7 @@ test("DEV browser-only setup persists only the isolated harness profile", async 
       "dev",
       "setup",
       "--browser-only",
+      "--mixed",
       "--browser-host-descriptor",
       descriptorPath,
       "--acknowledge-unofficial",
@@ -330,11 +353,13 @@ test("DEV browser-only setup persists only the isolated harness profile", async 
     expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
     expect(result.stdout).toContain("No Codex route, Responses listener, or system service was installed");
     expect(result.stdout).toContain("DEV launcher owns the isolated MCP tunnel");
+    expect(result.stdout).toContain("browser-only, mixed");
     expect(inspections).toBe(1);
     expect(JSON.parse(readFileSync(join(devHome, "config.json"), "utf8"))).toMatchObject({
       version: 3,
       purpose: "dev-harness",
       mode: "browser-only",
+      executionPolicy: "mixed",
       appName: "Codex Native2 DEV",
       browserHost: "launcher",
       browserHostDescriptorPath: descriptorPath,

@@ -5,6 +5,10 @@ import {
   decodeCompactionSummary,
 } from "./responses/compaction";
 import { BRIDGE_REASONING_PREFIX } from "./responses/reasoning-envelope";
+import {
+  assertNativeEgressAllowed,
+  type ExecutionPolicy,
+} from "./execution-policy";
 
 const CODEX_BACKEND = "https://chatgpt.com/backend-api/codex";
 const FIRST_PARTY_CODEX_ORIGINATORS = new Set([
@@ -29,6 +33,7 @@ const HOP_BY_HOP_HEADERS = new Set([
 export type NativeFetch = (request: Request) => Promise<Response>;
 export type NativeImageEndpoint = "images/generations" | "images/edits";
 export type NativeCodexEndpoint = "models" | "responses" | "responses/compact" | "alpha/search" | NativeImageEndpoint;
+
 
 type JsonObject = Record<string, unknown>;
 type BridgeCompactionItem = JsonObject & { type: "compaction"; encrypted_content: string };
@@ -207,9 +212,14 @@ function withUncleanCloseTolerance(
 export async function forwardNativeCodexRequest(
   request: Request,
   endpoint: NativeCodexEndpoint,
+  executionPolicy: ExecutionPolicy,
   fetchUpstream: NativeFetch = fetch,
   decodedBody?: unknown,
 ): Promise<Response> {
+  // Final native network boundary. Policy is mandatory so no caller can omit the decision and
+  // accidentally regain native inference after an upper routing check is missed.
+  assertNativeEgressAllowed(executionPolicy, endpoint);
+
   const authorization = request.headers.get("authorization") ?? "";
   if (!authorization.startsWith("Bearer ") || authorization.length <= "Bearer ".length) {
     throw new Error("Native Codex passthrough requires the incoming Bearer authorization");

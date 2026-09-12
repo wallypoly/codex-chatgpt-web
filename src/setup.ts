@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import type { AppConfig, BrowserInteractionMode, RuntimeMode, SubagentProtocol } from "./config";
+import type { ExecutionPolicy } from "./execution-policy";
 import {
   currentRuntimeCommand,
   defaultBrokerEndpoint,
@@ -46,6 +47,7 @@ export interface SetupOptions {
   mode: RuntimeMode;
   browserInteractionMode?: BrowserInteractionMode;
   subagentProtocol?: SubagentProtocol;
+  executionPolicy?: ExecutionPolicy;
   port?: number;
   chromeExecutablePath?: string;
   browserHostDescriptorPath?: string;
@@ -64,6 +66,7 @@ export interface SetupOptions {
 
 export interface SetupResult {
   mode: RuntimeMode;
+  executionPolicy: ExecutionPolicy;
   configPath: string;
   loginCreated: boolean;
   serviceLoaded: boolean;
@@ -80,6 +83,7 @@ interface PreparedSetup {
 
 export interface DevProfileSetupResult {
   mode: RuntimeMode;
+  executionPolicy: ExecutionPolicy;
   configPath: string;
   tunnelReady: boolean | null;
   connectorSetupRequired: boolean;
@@ -199,11 +203,12 @@ async function assertPortAvailable(host: string, port: number): Promise<void> {
 
 export function setupProxyIsReady(
   health: Record<string, unknown>,
-  config: Pick<AppConfig, "mode" | "releaseVersion">,
+  config: Pick<AppConfig, "mode" | "releaseVersion" | "executionPolicy">,
 ): boolean {
   return health.service === "codex-chatgpt-web"
     && health.status === "ok"
     && health.mode === config.mode
+    && health.execution_policy === config.executionPolicy
     && health.version === config.releaseVersion
     && health.accepting_turns === true;
 }
@@ -242,6 +247,7 @@ function baseConfig(
 ): AppConfig {
   const config = existing ? structuredClone(existing) : defaultConfig(options.mode);
   config.mode = options.mode;
+  if (options.executionPolicy) config.executionPolicy = options.executionPolicy;
   if (options.browserInteractionMode) config.browserInteractionMode = options.browserInteractionMode;
   Object.assign(config, resolveInteractionConnectorIdentities(
     config.browserInteractionMode,
@@ -608,6 +614,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
 
   return {
     mode: config.mode,
+    executionPolicy: config.executionPolicy,
     configPath: getConfigPath(),
     loginCreated,
     serviceLoaded: launcherOwned ? false : getServiceStatus().loaded,
@@ -660,6 +667,7 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
   saveConfig(config);
   return {
     mode: config.mode,
+    executionPolicy: config.executionPolicy,
     configPath: getConfigPath(),
     tunnelReady,
     connectorSetupRequired: config.mode === "full",

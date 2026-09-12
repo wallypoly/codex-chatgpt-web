@@ -7,6 +7,7 @@ import {
   CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL,
   CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL,
 } from "./chatgpt-web-models";
+import { parseExecutionPolicy, type ExecutionPolicy } from "./execution-policy";
 import type { CodexProviderConfig } from "./types";
 import { VERSION } from "./version";
 
@@ -68,6 +69,7 @@ export interface AppConfig {
   releaseVersion: string;
   mode: RuntimeMode;
   subagentProtocol: SubagentProtocol;
+  executionPolicy: ExecutionPolicy;
   host: "127.0.0.1";
   port: number;
   contextWindow: number;
@@ -197,6 +199,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     releaseVersion: VERSION,
     mode,
     subagentProtocol: "compatibility-v1",
+    executionPolicy: "web-only",
     host: "127.0.0.1",
     port: 17841,
     contextWindow: 256_000,
@@ -353,6 +356,7 @@ export function loadConfigForSetup(): AppConfig {
     raw.version = 3;
     raw.browserHost = "managed-chrome";
   }
+  if (raw.executionPolicy === undefined) raw.executionPolicy = "web-only";
   const interactionMode = raw.browserInteractionMode ?? "automatic";
   const automaticName = raw.automaticAppName
     ?? (interactionMode === "automatic" ? raw.appName : CHATGPT_CONNECTOR_NAME);
@@ -372,6 +376,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   if (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion.trim()) throw new Error(`Missing releaseVersion in ${path}`);
   if (parsed.mode !== "browser-only" && parsed.mode !== "full") throw new Error(`Invalid runtime mode in ${path}`);
+  const executionPolicy = parseExecutionPolicy(parsed.executionPolicy);
   const subagentProtocol = parsed.subagentProtocol ?? "compatibility-v1";
   if (subagentProtocol !== "compatibility-v1" && subagentProtocol !== "native") {
     throw new Error(`Invalid subagentProtocol in ${path}`);
@@ -514,6 +519,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     manualAppName,
     browserInteractionMode,
     subagentProtocol,
+    executionPolicy,
     solAvailable,
     proAvailable,
     experimentalBiggerContext,
@@ -545,6 +551,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
     : ["low", "medium"];
   return {
     adapter: "chatgpt-web",
+    executionPolicy: config.executionPolicy,
     baseUrl: "https://chatgpt.com",
     models,
     liveModels: false,

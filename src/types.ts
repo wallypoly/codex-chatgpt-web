@@ -1,3 +1,5 @@
+import type { ExecutionPolicy } from "./execution-policy";
+
 export interface CodexParsedRequest {
   modelId: string;
   previousResponseId?: string;
@@ -249,6 +251,7 @@ export interface CodexUsage {
 /** The only provider configuration supported by this focused runtime. */
 export interface CodexProviderConfig {
   adapter: "chatgpt-web";
+  executionPolicy?: ExecutionPolicy;
   baseUrl: string;
   defaultModel?: string;
   models?: string[];

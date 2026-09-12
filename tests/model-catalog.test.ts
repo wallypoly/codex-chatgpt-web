@@ -11,6 +11,12 @@ import {
 } from "../src/chatgpt-web-models";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
 
+function mixedConfig(mode: "browser-only" | "full") {
+  const config = defaultConfig(mode);
+  config.executionPolicy = "mixed";
+  return config;
+}
+
 function source(): Record<string, unknown> {
   return {
     models: [
@@ -46,10 +52,21 @@ function source(): Record<string, unknown> {
 }
 
 describe("native /models augmentation", () => {
+  test("web-only uses native metadata as a template but exposes only routed Web models", () => {
+    const config = defaultConfig("full");
+    config.subagentProtocol = "native";
+    config.proAvailable = true;
+    const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
+
+    expect(models).toHaveLength(CHATGPT_WEB_MODEL_ROUTES.length);
+    expect(models.map(model => model.slug)).toEqual(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug));
+    expect(models.every(model => String(model.slug).startsWith("chatgpt-web/"))).toBe(true);
+  });
+
   test("preserves every native model in order and appends one fixed model per ChatGPT Web mode", () => {
     const native = source();
     const nativeSnapshot = structuredClone(native);
-    const config = defaultConfig("full");
+    const config = mixedConfig("full");
     config.subagentProtocol = "native";
     config.proAvailable = true;
     const result = augmentNativeModelCatalog(native, config);
@@ -86,7 +103,7 @@ describe("native /models augmentation", () => {
   });
 
   test("publishes Bigger Context limits in the Codex model catalog", () => {
-    const config = defaultConfig("full");
+    const config = mixedConfig("full");
     config.proAvailable = true;
     config.experimentalBiggerContext = true;
     const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
@@ -96,7 +113,7 @@ describe("native /models augmentation", () => {
   });
 
   test("keeps native Sol selectable in the bounded Compatibility V1 registry", () => {
-    const config = defaultConfig("full");
+    const config = mixedConfig("full");
     config.subagentProtocol = "compatibility-v1";
     config.proAvailable = true;
     const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
@@ -121,7 +138,7 @@ describe("native /models augmentation", () => {
   });
 
   test("Compatibility V1 preserves an explicit native delegation disable while pinning supported rows", () => {
-    const config = defaultConfig("full");
+    const config = mixedConfig("full");
     config.subagentProtocol = "compatibility-v1";
     const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
 
@@ -134,7 +151,7 @@ describe("native /models augmentation", () => {
     const native = source();
     const snapshot = structuredClone(native);
     const nativeModels = snapshot.models as Array<Record<string, unknown>>;
-    const config = defaultConfig("full");
+    const config = mixedConfig("full");
     config.subagentProtocol = "native";
     config.proAvailable = true;
 
@@ -151,7 +168,7 @@ describe("native /models augmentation", () => {
   });
 
   test("owns only its namespace, is idempotent, and omits Pro-only modes when unavailable", () => {
-    const config = defaultConfig("browser-only");
+    const config = mixedConfig("browser-only");
     config.subagentProtocol = "native";
     config.proAvailable = false;
     const polluted = source();
@@ -181,7 +198,7 @@ describe("native /models augmentation", () => {
   });
 
   test("publishes Luna and Think routes when the account exposes no Sol selector", () => {
-    const config = defaultConfig("full");
+    const config = mixedConfig("full");
     config.solAvailable = false;
     const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
     const web = models.filter(model => String(model.slug).startsWith("chatgpt-web/"));
@@ -199,7 +216,7 @@ describe("native /models augmentation", () => {
   });
 
   test("Zero Risk publishes exactly one generic model without capability inference", () => {
-    const config = defaultConfig("full");
+    const config = mixedConfig("full");
     config.browserInteractionMode = "manual";
     config.solAvailable = false;
     config.proAvailable = false;
@@ -236,7 +253,7 @@ describe("native /models augmentation", () => {
   test("raises only native maximum windows for an explicit Codex context override", () => {
     const native = source();
     const nativeSnapshot = structuredClone(native);
-    const config = defaultConfig("full");
+    const config = mixedConfig("full");
     config.subagentProtocol = "native";
     const result = augmentNativeModelCatalog(native, config, {
       contextWindow: 371_851,
@@ -270,7 +287,7 @@ describe("native /models augmentation", () => {
     const native = source();
     const models = native.models as Array<Record<string, unknown>>;
     models[1]!.max_context_window = 1_000_000;
-    const result = augmentNativeModelCatalog(native, defaultConfig("full"), {
+    const result = augmentNativeModelCatalog(native, mixedConfig("full"), {
       contextWindow: 371_851,
     });
 
@@ -292,7 +309,7 @@ describe("native /models augmentation", () => {
       shell_type: "shell_command",
     });
 
-    const result = augmentNativeModelCatalog(native, defaultConfig("full"));
+    const result = augmentNativeModelCatalog(native, mixedConfig("full"));
     const web = (result.models as Array<Record<string, unknown>>)
       .filter(model => String(model.slug).startsWith("chatgpt-web/"));
     expect(web.length).toBe(3);
@@ -305,7 +322,7 @@ describe("native /models augmentation", () => {
     const models = native.models as Array<Record<string, unknown>>;
     for (const model of models) model.supported_in_api = false;
 
-    const config = defaultConfig("browser-only");
+    const config = mixedConfig("browser-only");
     config.subagentProtocol = "native";
     const result = augmentNativeModelCatalog(native, config);
     const web = (result.models as Array<Record<string, unknown>>)
@@ -329,7 +346,7 @@ describe("native /models augmentation", () => {
     };
     native.models = [sourceModels[0], terra, sol];
 
-    const result = augmentNativeModelCatalog(native, defaultConfig("full"));
+    const result = augmentNativeModelCatalog(native, mixedConfig("full"));
     const web = (result.models as Array<Record<string, unknown>>)
       .filter(model => String(model.slug).startsWith("chatgpt-web/"));
     expect(web.every(model => model.shell_type === "terra-shell")).toBe(true);
@@ -344,6 +361,6 @@ describe("native /models augmentation", () => {
         supported_reasoning_levels: [],
         tool_mode: null,
       }],
-    }, defaultConfig("full"))).toThrow("no list-visible, tool-capable model");
+    }, mixedConfig("full"))).toThrow("no list-visible, tool-capable model");
   });
 });

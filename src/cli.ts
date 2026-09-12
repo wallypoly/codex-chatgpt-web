@@ -58,6 +58,8 @@ Usage:
 Setup options:
   --browser-only               Account-eligible Web models, full context/images, no local tools or tunnel
   --full                       Account-eligible Web models with tools through the configured connector
+  --web-only                   Block native Codex work egress; allow native model metadata only (default for new setup)
+  --mixed                      Explicitly allow the historical Web + native dual-route gateway
   --automatic-browser-interaction
                                Send prompts and read ChatGPT state through browser automation (default)
   --zero-risk-browser-interaction
@@ -264,9 +266,13 @@ async function setupCommand(args: string[]): Promise<void> {
   const full = takeFlag(args, "--full");
   if (browserOnly === full) throw new Error("Choose exactly one setup mode: --browser-only or --full");
   const portRaw = takeOption(args, "--port");
+  const webOnly = takeFlag(args, "--web-only");
+  const mixed = takeFlag(args, "--mixed");
+  if (webOnly && mixed) throw new Error("Choose at most one execution policy: --web-only or --mixed");
   let acknowledged = takeFlag(args, "--acknowledge-unofficial");
   const options: SetupOptions = {
     mode: full ? "full" : "browser-only",
+    ...(webOnly || mixed ? { executionPolicy: mixed ? "mixed" : "web-only" } : {}),
     ...(portRaw ? { port: Number(portRaw) } : {}),
   };
   const automaticBrowserInteraction = takeFlag(args, "--automatic-browser-interaction");
@@ -348,7 +354,7 @@ async function setupCommand(args: string[]): Promise<void> {
   }
 
   const result = await setup(options);
-  stdout.write(`Setup complete: ${result.mode}\n`);
+  stdout.write(`Setup complete: ${result.mode} (${result.executionPolicy})\n`);
   stdout.write(`Config: ${result.configPath}\n`);
   if (result.connectorSetupRequired) {
     stdout.write("One account-level step remains: attach the tunnel to the ChatGPT connector named in config.\n");
@@ -579,7 +585,10 @@ async function main(): Promise<void> {
     assertNoArgs(args);
     const config = loadConfig();
     const server = startServer(config);
-    stdout.write(`codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode})\n`);
+    stdout.write(
+      `codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1`
+      + ` (${config.mode}, ${config.executionPolicy})\n`,
+    );
     await new Promise<void>(() => {});
   } else if (command === "dev") await runDevCommand(args);
   else if (command === "mcp") await runChatGptMcpMain(args);

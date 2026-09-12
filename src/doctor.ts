@@ -26,6 +26,9 @@ export interface DoctorCheck {
 export interface DoctorReport {
   ok: boolean;
   mode?: AppConfig["mode"];
+  executionPolicy?: AppConfig["executionPolicy"];
+  proxyLive?: boolean;
+  fullReady?: boolean | null;
   checks: DoctorCheck[];
 }
 
@@ -61,37 +64,83 @@ function launcherOwnershipError(config: AppConfig, health: Record<string, unknow
   return undefined;
 }
 
-async function proxyCheck(config: AppConfig): Promise<DoctorCheck> {
+interface ProxyCheckResult {
+  check: DoctorCheck;
+  live: boolean;
+}
+
+async function proxyCheck(config: AppConfig): Promise<ProxyCheckResult> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2_000);
   try {
     const response = await fetch(`http://${config.host}:${config.port}/healthz`, { signal: controller.signal });
-    if (!response.ok) return { id: "proxy", status: "error", message: `Responses proxy returned HTTP ${response.status}` };
+    if (!response.ok) {
+      return {
+        check: { id: "proxy", status: "error", message: `Responses proxy returned HTTP ${response.status}` },
+        live: false,
+      };
+    }
     const body = await response.json() as Record<string, unknown>;
-    if (body.service !== "codex-chatgpt-web" || body.status !== "ok") {
-      return { id: "proxy", status: "error", message: "The configured port belongs to another service" };
+    const live = body.service === "codex-chatgpt-web";
+    if (!live || body.status !== "ok") {
+      return {
+        check: { id: "proxy", status: "error", message: "The configured port does not expose a healthy codex-chatgpt-web service" },
+        live,
+      };
     }
     if (body.mode !== config.mode) {
-      return { id: "proxy", status: "error", message: `Daemon is running in ${String(body.mode)} mode; config requires ${config.mode}` };
+      return {
+        check: { id: "proxy", status: "error", message: `Daemon is running in ${String(body.mode)} mode; config requires ${config.mode}` },
+        live: true,
+      };
+    }
+    if (body.execution_policy !== config.executionPolicy) {
+      return {
+        check: {
+          id: "proxy",
+          status: "error",
+          message: `Daemon execution policy is ${String(body.execution_policy)}; config requires ${config.executionPolicy}`,
+        },
+        live: true,
+      };
     }
     if (body.version !== config.releaseVersion) {
-      return { id: "proxy", status: "error", message: `Daemon version is ${String(body.version)}; config requires ${config.releaseVersion}` };
+      return {
+        check: { id: "proxy", status: "error", message: `Daemon version is ${String(body.version)}; config requires ${config.releaseVersion}` },
+        live: true,
+      };
     }
     if (body.accepting_turns !== true) {
       return {
-        id: "proxy",
-        status: "error",
-        message: "Responses proxy is still drained and is not accepting Codex turns",
+        check: {
+          id: "proxy",
+          status: "error",
+          message: "Responses proxy is still drained and is not accepting Codex turns",
+        },
+        live: true,
       };
     }
     const ownershipError = launcherOwnershipError(config, body);
     if (ownershipError) {
-      return { id: "proxy", status: "error", message: "Responses proxy ownership could not be verified", detail: ownershipError };
+      return {
+        check: { id: "proxy", status: "error", message: "Responses proxy ownership could not be verified", detail: ownershipError },
+        live: true,
+      };
     }
-    return { id: "proxy", status: "ok", message: `Responses proxy is healthy on 127.0.0.1:${config.port}` };
+    return {
+      check: {
+        id: "proxy",
+        status: "ok",
+        message: `Responses proxy is healthy on 127.0.0.1:${config.port} (${config.executionPolicy})`,
+      },
+      live: true,
+    };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    return { id: "proxy", status: "error", message: "Responses proxy is not reachable", detail };
+    return {
+      check: { id: "proxy", status: "error", message: "Responses proxy is not reachable", detail },
+      live: false,
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -174,7 +223,8 @@ export async function runDoctor(): Promise<DoctorReport> {
   } else {
     checks.push({ id: "service", status: "ok", message: "macOS background service is loaded" });
   }
-  checks.push(await proxyCheck(config));
+  const proxy = await proxyCheck(config);
+  checks.push(proxy.check);
 
   if (config.mode === "full") {
     const settings = config.tunnel!;
@@ -219,19 +269,30 @@ export async function runDoctor(): Promise<DoctorReport> {
     checks.push({ id: "tools", status: "warning", message: "Browser-only mode intentionally has no local tools or MCP tunnel" });
   }
 
+  const ok = !checks.some(check => check.status === "error");
   return {
-    ok: !checks.some(check => check.status === "error"),
+    ok,
     mode: config.mode,
+    executionPolicy: config.executionPolicy,
+    proxyLive: proxy.live,
+    fullReady: config.mode === "full" ? ok : null,
     checks,
   };
 }
 
 export function formatDoctorReport(report: DoctorReport): string {
   const icon: Record<CheckStatus, string> = { ok: "✓", warning: "!", error: "✗" };
-  const lines = report.checks.flatMap(check => [
+  const lines: string[] = [];
+  if (report.mode) lines.push(`Runtime mode: ${report.mode}`);
+  if (report.executionPolicy) lines.push(`Execution policy: ${report.executionPolicy}`);
+  if (report.proxyLive !== undefined) lines.push(`Proxy liveness: ${report.proxyLive ? "live" : "not live"}`);
+  if (report.mode === "full" && report.fullReady !== undefined && report.fullReady !== null) {
+    lines.push(`Full readiness: ${report.fullReady ? "ready" : "not ready"}`);
+  }
+  lines.push(...report.checks.flatMap(check => [
     `${icon[check.status]} ${check.message}`,
     ...(check.detail ? [`  ${check.detail}`] : []),
-  ]);
+  ]));
   lines.push(report.ok ? "Doctor result: ready" : "Doctor result: not ready");
   return `${lines.join("\n")}\n`;
 }
