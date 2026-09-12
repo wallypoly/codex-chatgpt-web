@@ -36,8 +36,8 @@ const DEV_HELP = `Codex Web GPT DEV chat
 Usage:
   codex-chatgpt-web dev launcher
   codex-chatgpt-web dev status [--json]
-  codex-chatgpt-web dev setup --browser-only [--automatic-browser-interaction]
-  codex-chatgpt-web dev setup --full --tunnel-id ID --runtime-key-file PATH [--automatic-browser-interaction|--zero-risk-browser-interaction]
+  codex-chatgpt-web dev setup --browser-only [--web-only|--mixed] [--automatic-browser-interaction]
+  codex-chatgpt-web dev setup --full --tunnel-id ID --runtime-key-file PATH [--web-only|--mixed] [--automatic-browser-interaction|--zero-risk-browser-interaction]
   codex-chatgpt-web dev chat NAME [--model MODEL] [MESSAGE]
   codex-chatgpt-web dev list
 
@@ -308,12 +308,17 @@ export async function runDevCommand(args: string[]): Promise<void> {
     } catch (error) {
       launcher = { running: false, error: error instanceof Error ? error.message : String(error) };
     }
-    let config: { configured: boolean; mode?: string; purpose?: string; error?: string } = { configured: false };
+    let config: { configured: boolean; mode?: string; executionPolicy?: string; purpose?: string; error?: string } = { configured: false };
     let mcpRuntime: { required: boolean; ready: boolean; detail?: string } = { required: false, ready: false };
     if (existsSync(paths.configPath)) {
       try {
         const loaded = loadConfig();
-        config = { configured: true, mode: loaded.mode, purpose: loaded.purpose };
+        config = {
+          configured: true,
+          mode: loaded.mode,
+          executionPolicy: loaded.executionPolicy,
+          purpose: loaded.purpose,
+        };
         if (loaded.mode === "full") {
           const inspected = tunnelStatus(loaded);
           mcpRuntime = { required: true, ready: inspected.ok && inspected.ready, detail: inspected.detail };
@@ -328,7 +333,9 @@ export async function runDevCommand(args: string[]): Promise<void> {
     else {
       stdout.write(`DEV home: ${paths.home}\n`);
       stdout.write(`launcher: ${launcher.running ? `running (pid ${launcher.pid})` : `not ready${launcher.error ? ` · ${launcher.error}` : ""}`}\n`);
-      stdout.write(`config: ${config.configured ? `${config.mode} (${config.purpose})` : `not ready${config.error ? ` · ${config.error}` : ""}`}\n`);
+      stdout.write(
+        `config: ${config.configured ? `${config.mode} / ${config.executionPolicy} (${config.purpose})` : `not ready${config.error ? ` · ${config.error}` : ""}`}\n`,
+      );
       stdout.write(`MCP runtime: ${mcpRuntime.required ? (mcpRuntime.ready ? "ready" : `not ready${mcpRuntime.detail ? ` · ${mcpRuntime.detail}` : ""}`) : "not required"}\n`);
       stdout.write(`Bigger Context: ${features.biggerContext ? "enabled (experimental, adaptive 1/2/3 messages; same-agent compaction handoff)" : "disabled"}\n`);
       stdout.write("Codex route: isolated and unused\nResponses listener: not started\n");
@@ -345,6 +352,9 @@ export async function runDevCommand(args: string[]): Promise<void> {
     const descriptorPath = takeOption(args, "--browser-host-descriptor") ?? paths.descriptorPath;
     const acknowledgedUnofficial = takeFlag(args, "--acknowledge-unofficial");
     const refreshAccountCapabilities = takeFlag(args, "--refresh-account-capabilities");
+    const webOnly = takeFlag(args, "--web-only");
+    const mixed = takeFlag(args, "--mixed");
+    if (webOnly && mixed) throw new Error("Choose at most one execution policy: --web-only or --mixed");
     const automaticBrowserInteraction = takeFlag(args, "--automatic-browser-interaction");
     const manualBrowserInteraction = takeFlag(args, "--zero-risk-browser-interaction");
     if (automaticBrowserInteraction && manualBrowserInteraction) {
@@ -358,6 +368,7 @@ export async function runDevCommand(args: string[]): Promise<void> {
     if (args.length > 0) throw new Error(`Unknown DEV setup arguments: ${args.join(" ")}`);
     const result = await setupDevProfile({
       mode: full ? "full" : "browser-only",
+      ...(webOnly || mixed ? { executionPolicy: mixed ? "mixed" : "web-only" } : {}),
       browserHostDescriptorPath: descriptorPath,
       refreshAccountCapabilities,
       acknowledgedUnofficial,
@@ -369,7 +380,7 @@ export async function runDevCommand(args: string[]): Promise<void> {
       ...(runtimeKeyFile ? { runtimeKeyFile } : {}),
     });
     stdout.write(
-      `Isolated DEV profile configured (${result.mode}) at ${result.configPath}.\n`
+      `Isolated DEV profile configured (${result.mode}, ${result.executionPolicy}) at ${result.configPath}.\n`
       + "No Codex route, Responses listener, or system service was installed."
       + " In Full mode, the DEV launcher owns the isolated MCP tunnel.\n",
     );
